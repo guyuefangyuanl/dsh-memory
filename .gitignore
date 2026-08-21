@@ -1,0 +1,14 @@
+node_modules/
+*.tgz
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.pnpm-store/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+coverage/
+*.local
+.env
+.env.*
