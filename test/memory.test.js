@@ -338,6 +338,19 @@ test('同名时项目层遮蔽全局层', async () => {
   }
 })
 
+test('write 的回执只在落到全局层时才提 scope，不会读成 "(project, project)"', async () => {
+  const s = setup()
+  try {
+    const toProject = await s.tool.execute(W({ name: 'local-one', type: 'project' }))
+    assert.match(toProject.message, /"local-one" \(project\)\./u, '默认落点不必把 scope 再说一遍')
+
+    const toGlobal = await s.tool.execute(W({ name: 'shared-one', type: 'user', scope: 'global' }))
+    assert.match(toGlobal.message, /"shared-one" \(user, global scope\)\./u, '落到全局层必须点出来')
+  } finally {
+    s.cleanup()
+  }
+})
+
 test('单层部署里请求另一层的 scope 会被明确拒绝', async () => {
   const s = setup({ plugin: { scope: 'project' } })
   try {

@@ -456,10 +456,13 @@ function doWrite(store, layerIds, writeLayer, a) {
   }
 
   const total = store.entries().length
+  // 项目层是默认落点，只有落到全局层才值得在消息里点出来 —— 否则 type 和
+  // scope 都叫 "project" 时会读成 "(project, project)"。
+  const where = target.id === 'global' ? ', global scope' : ''
   return {
     action: 'write',
     ok: true,
-    message: `${existed ? 'Updated' : 'Saved'} "${memName}" (${type}, ${target.id}). ${total} memories total.`,
+    message: `${existed ? 'Updated' : 'Saved'} "${memName}" (${type}${where}). ${total} memories total.`,
     count: total,
     ...(warnings.length > 0 ? { warnings } : {}),
   }
