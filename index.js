@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { LAYERS, resolveLayers, defaultWriteLayer } from './lib/paths.js'
-import { TYPES, NAME_RE, parseMemory, extractLinks, ageInDays } from './lib/frontmatter.js'
+import { TYPES, NAME_RE, parseMemory, ageInDays } from './lib/frontmatter.js'
 import { MemoryStore } from './lib/store.js'
 import { renderIndexSection, MAX_INDEX_BYTES } from './lib/inject.js'
 
@@ -113,8 +113,13 @@ const TOOL_DESCRIPTION = [
   'shares it with every project — right for who the person is, wrong for what this repo is doing.',
   '',
   'Before writing, `search` for what you are about to record. Sharpening the note that already covers',
-  'it beats leaving two half-notes that disagree. When a note turns out to be wrong, `delete` it —',
-  'a stale memory costs more than a missing one. Cross-reference related notes as [[their-name]].',
+  'it beats leaving two half-notes that disagree. To correct part of a note, `edit` it by quoting the',
+  'exact text to replace, rather than resending the whole thing through `write`. When a note turns out',
+  'to be wrong, `delete` it — a stale memory costs more than a missing one.',
+  '',
+  'Cross-reference freely as [[their-name]], including names you have not written yet. An unwritten',
+  'link is not a mistake: it records that the fact is worth capturing, and `list` returns those names',
+  'as a backlog so a later session can work through them.',
 ].join('\n')
 
 // ── 插件 ─────────────────────────────────────────────────────────────────────
@@ -185,13 +190,14 @@ function defineMemoryTool({ store, layers, writeLayer }) {
       action: {
         type: 'string',
         required: true,
-        enum: ['write', 'read', 'list', 'search', 'delete'],
+        enum: ['write', 'read', 'list', 'search', 'edit', 'delete'],
         description:
-          'write (create or replace one note) | read (load notes in full) | list (every note, index form) | search (match on content) | delete (remove one).',
+          'write (create or replace one note) | read (load notes in full) | list (every note, index form) | search (match on content) | edit (change part of an existing note) | delete (remove one).',
       },
       name: {
         type: 'string',
-        description: 'Lowercase kebab-case identifier. Required for write and delete; for read, use this or `names`.',
+        description:
+          'Lowercase kebab-case identifier. Required for write, edit, and delete; for read, use this or `names`.',
       },
       names: {
         type: 'array',
@@ -201,12 +207,26 @@ function defineMemoryTool({ store, layers, writeLayer }) {
       description: {
         type: 'string',
         description:
-          'One line, shown in the always-loaded index. It is the only thing a future session sees before deciding whether to open this note, so make it say what the note settles, not what topic it is near.',
+          'One line, shown in the always-loaded index. It is the only thing a future session sees before deciding whether to open this note, so make it say what the note settles, not what topic it is near. Required for write; on edit, replaces the existing one.',
       },
       type: {
         type: 'string',
         enum: [...TYPES],
-        description: 'Required for write. On list, restricts the result to one type.',
+        description:
+          'Required for write. On edit, reclassifies the note. On list, restricts the result to one type.',
+      },
+      old_string: {
+        type: 'string',
+        description:
+          'edit only: the exact text to replace, copied from the note body. Must appear exactly once unless replace_all is set. Only the body is searched, so an edit can never damage the frontmatter.',
+      },
+      new_string: {
+        type: 'string',
+        description: 'edit only: what old_string becomes. Pass an empty string to delete that text.',
+      },
+      replace_all: {
+        type: 'boolean',
+        description: 'edit only: replace every occurrence instead of requiring old_string to be unique.',
       },
       content: {
         type: 'string',
@@ -265,6 +285,7 @@ function defineMemoryTool({ store, layers, writeLayer }) {
                 content: { type: 'string' },
                 updatedDaysAgo: { type: 'integer' },
                 links: { type: 'array', items: { type: 'string' } },
+                unwrittenLinks: { type: 'array', items: { type: 'string' } },
                 backlinks: { type: 'array', items: { type: 'string' } },
               },
             },
@@ -281,6 +302,18 @@ function defineMemoryTool({ store, layers, writeLayer }) {
                 description: { type: 'string' },
                 scope: { type: 'string' },
                 snippet: { type: 'string' },
+              },
+            },
+          },
+          unwritten: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['name', 'from'],
+              properties: {
+                name: { type: 'string' },
+                from: { type: 'array', items: { type: 'string' } },
               },
             },
           },
@@ -303,6 +336,7 @@ function executeMemory({ store, layerIds, writeLayer }, a) {
   if (action === 'search') return doSearch(store, a)
   if (action === 'read') return doRead(store, a)
   if (action === 'write') return doWrite(store, layerIds, writeLayer, a)
+  if (action === 'edit') return doEdit(store, a)
   if (action === 'delete') return doDelete(store, a)
   return { action: String(action), ok: false, message: `Unknown action "${action}".` }
 }
@@ -323,12 +357,21 @@ function doList(store, a) {
     return { action: 'list', ok: false, message: `type must be one of: ${TYPES.join(', ')}` }
   }
   const items = store.entries().filter((e) => !filter || e.type === filter)
+  // 待写清单只在看全量时才有意义 —— 按 type 过滤时它和结果对不上。
+  const unwritten = filter ? [] : store.unwrittenLinks()
+  const parts = [`${items.length} ${filter ? `${filter} ` : ''}memories.`]
+  if (unwritten.length > 0) {
+    parts.push(
+      `${unwritten.length} name${unwritten.length === 1 ? ' is' : 's are'} linked to but not written yet — a backlog, not an error.`,
+    )
+  }
   return {
     action: 'list',
     ok: true,
-    message: `${items.length} ${filter ? `${filter} ` : ''}memories.`,
+    message: parts.join(' '),
     count: items.length,
     memories: items.map(summarize),
+    ...(unwritten.length > 0 ? { unwritten } : {}),
   }
 }
 
@@ -384,6 +427,7 @@ function doRead(store, a) {
       missing.push(memName)
       continue
     }
+    const known = new Set(store.entries().map((e) => e.name))
     documents.push({
       name: entry.name,
       type: entry.type,
@@ -391,6 +435,7 @@ function doRead(store, a) {
       content,
       updatedDaysAgo: ageInDays(entry.updated),
       links: entry.links,
+      unwrittenLinks: entry.links.filter((l) => !known.has(l)),
       backlinks: store.backlinks(entry.name),
     })
   }
@@ -445,10 +490,6 @@ function doWrite(store, layerIds, writeLayer, a) {
   const { existed } = store.write({ name: memName, description, type, content, layer: target })
 
   const warnings = []
-  const dangling = store.danglingLinks(extractLinks(content))
-  if (dangling.length > 0) {
-    warnings.push(`Links to memories that do not exist: ${dangling.map((d) => `[[${d}]]`).join(', ')}.`)
-  }
   if (!existed && duplicates.length > 0) {
     warnings.push(
       `Reads close to existing ${duplicates.length === 1 ? 'memory' : 'memories'}: ${duplicates.join(', ')}. If it is the same fact, merge and delete the loser.`,
@@ -468,6 +509,93 @@ function doWrite(store, layerIds, writeLayer, a) {
   }
 }
 
+/** `String.replace` 会把 `$&`、`$1` 当替换模式解释，所以按下标切片，不用它。 */
+function spliceOnce(text, needle, replacement) {
+  const at = text.indexOf(needle)
+  return text.slice(0, at) + replacement + text.slice(at + needle.length)
+}
+
+function doEdit(store, a) {
+  const memName = typeof a.name === 'string' ? a.name.trim() : ''
+  if (!memName) return { action: 'edit', ok: false, message: 'name is required for edit.' }
+  if (!NAME_RE.test(memName)) {
+    return { action: 'edit', ok: false, message: `Invalid name "${memName}".` }
+  }
+  const entry = store.entry(memName)
+  if (!entry) {
+    return {
+      action: 'edit',
+      ok: false,
+      message: `No memory named "${memName}". Use write to create it.`,
+    }
+  }
+
+  const oldString = typeof a.old_string === 'string' ? a.old_string : ''
+  const newString = typeof a.new_string === 'string' ? a.new_string : ''
+  const description = typeof a.description === 'string' && a.description.trim() ? a.description.trim() : undefined
+  const rawType = typeof a.type === 'string' && a.type.trim() ? a.type.trim() : undefined
+  if (rawType && !TYPES.includes(rawType)) {
+    return { action: 'edit', ok: false, message: `type must be one of: ${TYPES.join(', ')}` }
+  }
+
+  const changesBody = oldString.length > 0
+  if (!changesBody && !description && !rawType) {
+    return {
+      action: 'edit',
+      ok: false,
+      message:
+        'edit needs old_string (with new_string), or a new description or type. To replace a memory outright, use write.',
+    }
+  }
+
+  let body = store.bodyOf(entry)
+  let replaced = 0
+  if (changesBody) {
+    if (oldString === newString) {
+      return { action: 'edit', ok: false, message: 'old_string and new_string are identical — nothing to do.' }
+    }
+    const hits = body.split(oldString).length - 1
+    if (hits === 0) {
+      return {
+        action: 'edit',
+        ok: false,
+        message: `old_string does not appear in "${memName}". Read it first and copy the text exactly, whitespace included. Only the body is searched — frontmatter is not editable this way.`,
+      }
+    }
+    if (hits > 1 && a.replace_all !== true) {
+      return {
+        action: 'edit',
+        ok: false,
+        message: `old_string appears ${hits} times in "${memName}". Include enough surrounding text to make it unique, or pass replace_all: true.`,
+      }
+    }
+    body = a.replace_all === true ? body.split(oldString).join(newString) : spliceOnce(body, oldString, newString)
+    replaced = a.replace_all === true ? hits : 1
+    body = body.trim()
+    if (!body) {
+      return {
+        action: 'edit',
+        ok: false,
+        message: `That would leave "${memName}" with no content. Use delete if the memory no longer holds.`,
+      }
+    }
+  }
+
+  store.update({ name: memName, body, description, type: rawType })
+
+  const changed = []
+  if (changesBody) changed.push(`replaced ${replaced} occurrence${replaced === 1 ? '' : 's'}`)
+  if (description) changed.push('new description')
+  if (rawType) changed.push(`type → ${rawType}`)
+
+  return {
+    action: 'edit',
+    ok: true,
+    message: `Edited "${memName}" (${changed.join(', ')}).`,
+    count: store.entries().length,
+  }
+}
+
 function doDelete(store, a) {
   const memName = typeof a.name === 'string' ? a.name.trim() : ''
   if (!memName) return { action: 'delete', ok: false, message: 'name is required for delete.' }
@@ -480,9 +608,14 @@ function doDelete(store, a) {
   if (!removed) return { action: 'delete', ok: false, message: `No memory named "${memName}".` }
 
   const total = store.entries().length
+  // 引用一条不存在的记忆本身没问题 —— 但如果这件事是搬走了而不是不成立了，
+  // 那些引用应该指向新的落点，所以这里点名让人决定，而不是当成坏链报警。
+  const one = referrers.length === 1
   const warnings =
     referrers.length > 0
-      ? [`Still referenced as [[${memName}]] by: ${referrers.join(', ')}. Those links now dangle.`]
+      ? [
+          `${referrers.join(', ')} still ${one ? 'links' : 'link'} to [[${memName}]]. That is only a backlog entry now; if the fact moved rather than stopped being true, repoint ${one ? 'it' : 'them'} at wherever it went.`,
+        ]
       : []
   return {
     action: 'delete',
@@ -507,6 +640,11 @@ function renderToolResult(_args, value) {
             .map((m) => `- ${m.name} (${m.type}${m.scope === 'global' ? ', global' : ''}) — ${m.description}`)
             .join('\n'),
     )
+    if (Array.isArray(v.unwritten) && v.unwritten.length > 0) {
+      lines.push('')
+      lines.push('linked to but not written yet (worth capturing, in rough order of demand):')
+      for (const u of v.unwritten) lines.push(`- ${u.name} — referenced by ${u.from.join(', ')}`)
+    }
   } else if (v.action === 'search' && Array.isArray(v.results)) {
     lines.push(String(v.message ?? ''))
     for (const r of v.results) {
@@ -525,6 +663,9 @@ function renderToolResult(_args, value) {
       lines.push(d.content.trim())
       if (Array.isArray(d.backlinks) && d.backlinks.length > 0) {
         lines.push(`referenced by: ${d.backlinks.join(', ')}`)
+      }
+      if (Array.isArray(d.unwrittenLinks) && d.unwrittenLinks.length > 0) {
+        lines.push(`links to memories not written yet: ${d.unwrittenLinks.join(', ')}`)
       }
       if (typeof d.updatedDaysAgo === 'number' && d.updatedDaysAgo >= STALE_AFTER_DAYS) {
         lines.push(

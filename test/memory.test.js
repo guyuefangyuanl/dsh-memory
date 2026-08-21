@@ -424,32 +424,228 @@ test('read 支持一次取多条，缺失的单独报告而不是整体失败', 
 
 // ── 链接与重复 ───────────────────────────────────────────────────────────────
 
-test('写入时指出悬空的 [[链接]]', async () => {
+test('链到还没写的记忆不算错误，write 不报警', async () => {
   const s = setup()
   try {
     const r = await s.tool.execute(W({ name: 'linker', content: '见 [[missing-one]] 和 [[also-gone]]。' }))
-    assert.equal(r.ok, true, '悬空链接是提示，不是拒绝')
-    assert.equal(r.warnings.length, 1)
-    assert.match(r.warnings[0], /\[\[missing-one\]\]/u)
-    assert.match(r.warnings[0], /\[\[also-gone\]\]/u)
+    assert.equal(r.ok, true)
+    assert.equal(r.warnings, undefined, '未写的链接是待写清单，不是 warning')
   } finally {
     s.cleanup()
   }
 })
 
-test('read 报告反向链接，delete 提醒引用会悬空', async () => {
+test('list 把未写的链接收成待写清单，按被引用次数排序', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'one', content: '见 [[wanted]] 和 [[niche]]。' }))
+    await s.tool.execute(W({ name: 'two', content: '也依赖 [[wanted]]。' }))
+
+    const l = await s.tool.execute({ action: 'list' })
+    assert.equal(l.count, 2)
+    assert.deepEqual(l.unwritten.map((u) => u.name), ['wanted', 'niche'], '被引用最多的排前面')
+    assert.deepEqual(l.unwritten[0].from, ['one', 'two'])
+    assert.match(l.message, /backlog, not an error/u)
+
+    const rendered = s.tool.output.render({ action: 'list' }, l)[0].text
+    assert.match(rendered, /not written yet/u)
+
+    // 写掉一条之后它就该从清单里消失
+    await s.tool.execute(W({ name: 'wanted' }))
+    const after = await s.tool.execute({ action: 'list' })
+    assert.deepEqual(after.unwritten.map((u) => u.name), ['niche'])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('read 分别报告反向链接和尚未写的链接', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'target' }))
+    await s.tool.execute(W({ name: 'referrer', content: '依赖 [[target]] 与 [[future-note]]。' }))
+
+    const t = await s.tool.execute({ action: 'read', name: 'target' })
+    assert.deepEqual(t.documents[0].backlinks, ['referrer'])
+    assert.deepEqual(t.documents[0].links, [])
+
+    const r = await s.tool.execute({ action: 'read', name: 'referrer' })
+    assert.deepEqual(r.documents[0].links, ['target', 'future-note'])
+    assert.deepEqual(r.documents[0].unwrittenLinks, ['future-note'], '已存在的 target 不该混进来')
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('delete 会点名谁还在引用，但措辞是待办不是坏链', async () => {
   const s = setup()
   try {
     await s.tool.execute(W({ name: 'target' }))
     await s.tool.execute(W({ name: 'referrer', content: '依赖 [[target]]。' }))
 
-    const r = await s.tool.execute({ action: 'read', name: 'target' })
-    assert.deepEqual(r.documents[0].backlinks, ['referrer'])
-    assert.deepEqual(r.documents[0].links, [])
-
     const d = await s.tool.execute({ action: 'delete', name: 'target' })
     assert.equal(d.ok, true)
-    assert.match(d.warnings[0], /referrer/u)
+    assert.match(d.warnings[0], /^referrer still links to/u, '单数引用者要用单数动词')
+    assert.match(d.warnings[0], /repoint it at/u)
+    assert.match(d.warnings[0], /backlog entry now/u)
+    assert.doesNotMatch(d.warnings[0], /dangle/u)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('多个引用者时 delete 的措辞用复数', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'target' }))
+    await s.tool.execute(W({ name: 'one', content: '依赖 [[target]]。' }))
+    await s.tool.execute(W({ name: 'two', content: '也依赖 [[target]]。' }))
+
+    const d = await s.tool.execute({ action: 'delete', name: 'target' })
+    assert.match(d.warnings[0], /^one, two still link to/u)
+    assert.match(d.warnings[0], /repoint them at/u)
+  } finally {
+    s.cleanup()
+  }
+})
+
+// ── 局部编辑 ─────────────────────────────────────────────────────────────────
+
+test('edit 按锚点替换正文，不必重发全文，且 created 不变', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'ports', content: '数据库跑在端口 5432。\n\n另有一句无关的话。' }))
+    const before = await s.tool.execute({ action: 'read', name: 'ports' })
+    const created = /created: (.+)/u.exec(before.documents[0].content)[1]
+
+    const e = await s.tool.execute({
+      action: 'edit',
+      name: 'ports',
+      old_string: '端口 5432',
+      new_string: '端口 5433',
+    })
+    assert.equal(e.ok, true)
+    assert.match(e.message, /replaced 1 occurrence/u)
+
+    const after = await s.tool.execute({ action: 'read', name: 'ports' })
+    assert.match(after.documents[0].content, /端口 5433/u)
+    assert.match(after.documents[0].content, /另有一句无关的话/u, '没被点到的正文必须原样保留')
+    assert.match(after.documents[0].content, new RegExp(`created: ${created}`, 'u'))
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('edit 可以只改 description / type，不动正文', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'a', description: '旧说明', type: 'project', content: '正文原样' }))
+    const e = await s.tool.execute({ action: 'edit', name: 'a', description: '新说明', type: 'reference' })
+    assert.equal(e.ok, true)
+    assert.match(e.message, /new description/u)
+    assert.match(e.message, /type → reference/u)
+
+    const r = await s.tool.execute({ action: 'read', name: 'a' })
+    assert.match(r.documents[0].content, /description: 新说明/u)
+    assert.match(r.documents[0].content, /type: reference/u)
+    assert.match(r.documents[0].content, /正文原样/u)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('edit 的锚点不唯一时拒绝，除非显式 replace_all', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'dup', content: 'foo 一次\nfoo 两次\nfoo 三次' }))
+
+    const ambiguous = await s.tool.execute({ action: 'edit', name: 'dup', old_string: 'foo', new_string: 'bar' })
+    assert.equal(ambiguous.ok, false)
+    assert.match(ambiguous.message, /appears 3 times/u)
+
+    const all = await s.tool.execute({
+      action: 'edit',
+      name: 'dup',
+      old_string: 'foo',
+      new_string: 'bar',
+      replace_all: true,
+    })
+    assert.equal(all.ok, true)
+    assert.match(all.message, /replaced 3 occurrences/u)
+    const r = await s.tool.execute({ action: 'read', name: 'dup' })
+    assert.doesNotMatch(r.documents[0].content, /foo/u)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('edit 碰不到 frontmatter：锚点只在正文里找', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'safe', description: '原说明', type: 'project', content: '正文' }))
+
+    // frontmatter 里确实有 `name: safe` 这一行，但它不在正文里，所以匹配不到
+    const attack = await s.tool.execute({
+      action: 'edit',
+      name: 'safe',
+      old_string: 'name: safe',
+      new_string: 'name: hijacked',
+    })
+    assert.equal(attack.ok, false)
+    assert.match(attack.message, /Only the body is searched|does not appear/u)
+
+    // 就算把整段文档头塞进 new_string，也只是变成正文的一部分
+    await s.tool.execute({
+      action: 'edit',
+      name: 'safe',
+      old_string: '正文',
+      new_string: '---\nname: hijacked\ndescription: x\n---\n仍是正文',
+    })
+    const l = await s.tool.execute({ action: 'list' })
+    assert.equal(l.count, 1)
+    assert.equal(l.memories[0].name, 'safe', 'frontmatter 由插件重新渲染，注入不进去')
+    assert.equal(l.memories[0].description, '原说明')
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('edit 的替换文本里的 $& / $1 是字面量，不是替换模式', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'money', content: '价格是 PLACEHOLDER 元' }))
+    await s.tool.execute({
+      action: 'edit',
+      name: 'money',
+      old_string: 'PLACEHOLDER',
+      new_string: '$& $1 $`',
+    })
+    const r = await s.tool.execute({ action: 'read', name: 'money' })
+    assert.match(r.documents[0].content, /价格是 \$& \$1 \$` 元/u)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('edit 的各种拒绝路径都不落盘', async () => {
+  const s = setup()
+  try {
+    await s.tool.execute(W({ name: 'a', content: '原文' }))
+    const bad = [
+      { action: 'edit' },
+      { action: 'edit', name: 'nope', old_string: 'x', new_string: 'y' },
+      { action: 'edit', name: 'a' },
+      { action: 'edit', name: 'a', old_string: '不存在', new_string: 'y' },
+      { action: 'edit', name: 'a', old_string: '原文', new_string: '原文' },
+      { action: 'edit', name: 'a', old_string: '原文', new_string: '' },
+      { action: 'edit', name: 'a', type: 'not-a-type' },
+    ]
+    for (const args of bad) {
+      const r = await s.tool.execute(args)
+      assert.equal(r.ok, false, `应拒绝: ${JSON.stringify(args)}`)
+    }
+    const r = await s.tool.execute({ action: 'read', name: 'a' })
+    assert.match(r.documents[0].content, /原文/u, '被拒绝的编辑不该改动文件')
   } finally {
     s.cleanup()
   }
@@ -575,6 +771,8 @@ test('输出符合声明的 output schema 形状', async () => {
       { action: 'list' },
       { action: 'read', name: 'a' },
       { action: 'search', query: 'a' },
+      { action: 'edit', name: 'a', old_string: '指向', new_string: '引用' },
+      { action: 'edit', name: 'a', old_string: 'absent', new_string: 'x' },
       { action: 'delete', name: 'a' },
       { action: 'bogus' },
     ]

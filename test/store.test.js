@@ -232,14 +232,42 @@ test('多个词全命中的条目排在只命中一个词的前面', () => {
   }
 })
 
-test('反向链接与悬空链接都从缓存算出，不读盘', () => {
+test('反向链接与待写清单都从缓存算出，不读盘', () => {
   const s = setup()
   try {
     put(s, 'target')
     put(s, 'referrer', { content: '依赖 [[target]] 与 [[ghost]]。' })
 
     assert.deepEqual(s.store.backlinks('target'), ['referrer'])
-    assert.deepEqual(s.store.danglingLinks(['target', 'ghost']), ['ghost'])
+    assert.deepEqual(s.store.unwrittenLinks(), [{ name: 'ghost', from: ['referrer'] }])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('update 保留 created 并刷新 updated，同时失效缓存', () => {
+  const s = setup()
+  try {
+    put(s, 'alpha', { content: '第一版' })
+    const before = s.store.entries()[0]
+
+    s.store.update({ name: 'alpha', body: '第二版', description: '改过的说明' })
+
+    const after = s.store.entries()[0]
+    assert.equal(after.body, '第二版')
+    assert.equal(after.description, '改过的说明')
+    assert.equal(after.type, 'project', '没传 type 就保持原样')
+    assert.equal(after.created, before.created, 'created 必须原封不动')
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('update 一条不存在的记忆返回 null，不创建文件', () => {
+  const s = setup()
+  try {
+    assert.equal(s.store.update({ name: 'nope', body: 'x' }), null)
+    assert.deepEqual(s.store.entries(), [])
   } finally {
     s.cleanup()
   }

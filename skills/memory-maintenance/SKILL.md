@@ -32,17 +32,25 @@ so record the current state and say what it replaced, rather than keeping the co
 
 **4. Check the notes that make claims about code.** Any memory naming a file, function, flag, table,
 or endpoint is a claim that can go stale silently. `read` those and verify the thing still exists.
-If it moved, rewrite the note. If the whole premise is gone, delete it — an empty store beats a
-confidently wrong one.
+If it moved, `edit` the note — quote the stale sentence as `old_string` and replace just that, rather
+than resending the whole body through `write` and risking losing a detail you did not mean to touch.
+If the whole premise is gone, delete it — an empty store beats a confidently wrong one.
 
-**5. Repair the link graph.** `read` reports each note's `backlinks`, and `write` and `delete` report
-links that point at nothing. Fix dangling `[[names]]` by pointing them at the note that absorbed the
-deleted one, or by dropping the reference.
+**5. Work the unwritten-link backlog.** `list` returns `unwritten`: names that existing notes link to
+but nobody has written, ordered by how many notes want them. These are not broken links. Each one is
+a past session saying "this deserves its own note" — the most-referenced ones are the facts the store
+is most obviously missing. Write the ones you can now write truthfully, and leave the rest; an
+unwritten link costs nothing and keeps the intent visible.
+
+The one case that does need repair is a name that used to exist. When you delete or rename a note,
+`delete` tells you who still links to it. If the fact moved, repoint those links at where it went. If
+the fact simply stopped being true, leaving the link is fine — it will just sit in the backlog.
 
 **6. Re-read the descriptions.** The description is the only thing a future session sees before
 deciding whether to open the note, and it is loaded on every request. It should say what the note
 settles, not what it is about. "Deploy notes" is a topic; "deploys go to the staging bucket, prod is
-manual and requires the release captain" is a fact. Rewrite the ones that are only topics.
+manual and requires the release captain" is a fact. Rewrite the ones that are only topics — `edit`
+with a new `description` changes just that line and leaves the body alone.
 
 ## What does not belong in memory
 

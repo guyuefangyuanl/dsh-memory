@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "dsh-memory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cross-session persistent memory for the DeepSeek Harness: a model-facing memory tool, an always-on index section, and a bundled maintenance skill.",
   "author": "guyuefangyuanl (https://github.com/guyuefangyuanl)",
   "repository": {
