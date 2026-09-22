@@ -70,6 +70,43 @@ test('inject 只声明真正必需的两个服务', () => {
   assert.deepEqual([...inject].sort(), ['systemPrompt', 'tools'])
 })
 
+test('注册参数可直接作为 Chat Completions 的 JSON Schema 发送（issue #1）', () => {
+  const s = setup()
+  try {
+    // 旧版 dsh 原样转发注册参数，不会把逐字段 spec 编译成 JSON Schema。
+    const wire = JSON.parse(JSON.stringify({
+      type: 'function',
+      function: {
+        name: s.tool.name,
+        description: s.tool.description,
+        parameters: s.tool.parameters,
+      },
+    }))
+    const schema = wire.function.parameters
+    assert.equal(schema.type, 'object')
+    assert.deepEqual(schema.required, ['action'], '动作专属参数不能变成所有调用的必填项')
+    assert.equal(schema.description, undefined, '记忆的 description 参数必须放在 properties 内')
+    const expectedTypes = {
+      action: 'string', name: 'string', names: 'array', description: 'string',
+      type: 'string', old_string: 'string', new_string: 'string', replace_all: 'boolean',
+      content: 'string', scope: 'string', query: 'string', limit: 'integer',
+    }
+    assert.deepEqual(Object.keys(schema.properties).sort(), Object.keys(expectedTypes).sort())
+    for (const [key, type] of Object.entries(expectedTypes)) {
+      const property = schema.properties[key]
+      assert.equal(property.type, type, key)
+      assert.equal(typeof property.description, 'string', key)
+      assert.equal(property.required, undefined, '不能把 spec 的 boolean required 发给 provider')
+    }
+    assert.deepEqual(schema.properties.action.enum, ['write', 'read', 'list', 'search', 'edit', 'delete'])
+    assert.deepEqual(schema.properties.names.items, { type: 'string' })
+    assert.deepEqual(schema.properties.type.enum, ['user', 'feedback', 'project', 'reference'])
+    assert.deepEqual(schema.properties.scope.enum, ['project', 'global'])
+  } finally {
+    s.cleanup()
+  }
+})
+
 test('缺服务时 apply 立即失败，而不是静默降级', () => {
   assert.throws(() => apply({ effect: (f) => f(), systemPrompt: { section() {} } }), /ctx\.tools/u)
   assert.throws(() => apply({ effect: (f) => f(), tools: { register() {} } }), /ctx\.systemPrompt/u)

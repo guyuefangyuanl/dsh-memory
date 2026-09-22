@@ -186,65 +186,69 @@ function defineMemoryTool({ store, layers, writeLayer }) {
   return {
     name: 'memory',
     description: TOOL_DESCRIPTION,
+    // ctx.tools.register() on older dsh forwards parameters without compiling a field spec.
     parameters: {
-      action: {
-        type: 'string',
-        required: true,
-        enum: ['write', 'read', 'list', 'search', 'edit', 'delete'],
-        description:
-          'write (create or replace one note) | read (load notes in full) | list (every note, index form) | search (match on content) | edit (change part of an existing note) | delete (remove one).',
-      },
-      name: {
-        type: 'string',
-        description:
-          'Lowercase kebab-case identifier. Required for write, edit, and delete; for read, use this or `names`.',
-      },
-      names: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Read several notes in one call instead of one round trip each.',
-      },
-      description: {
-        type: 'string',
-        description:
-          'One line, shown in the always-loaded index. It is the only thing a future session sees before deciding whether to open this note, so make it say what the note settles, not what topic it is near. Required for write; on edit, replaces the existing one.',
-      },
-      type: {
-        type: 'string',
-        enum: [...TYPES],
-        description:
-          'Required for write. On edit, reclassifies the note. On list, restricts the result to one type.',
-      },
-      old_string: {
-        type: 'string',
-        description:
-          'edit only: the exact text to replace, copied from the note body. Must appear exactly once unless replace_all is set. Only the body is searched, so an edit can never damage the frontmatter.',
-      },
-      new_string: {
-        type: 'string',
-        description: 'edit only: what old_string becomes. Pass an empty string to delete that text.',
-      },
-      replace_all: {
-        type: 'boolean',
-        description: 'edit only: replace every occurrence instead of requiring old_string to be unique.',
-      },
-      content: {
-        type: 'string',
-        description:
-          'The note itself. For feedback and project notes, state the fact, then a "Why:" line and a "How to apply:" line so a later session can act on it without guessing.',
-      },
-      scope: {
-        type: 'string',
-        enum: [...LAYERS],
-        description: `Where to write: project (this working directory) or global (every project). Default ${writeLayer.id}.`,
-      },
-      query: {
-        type: 'string',
-        description: 'Required for search. Words are matched as substrings against name, description, and body.',
-      },
-      limit: {
-        type: 'integer',
-        description: 'Maximum search results (default 10).',
+      type: 'object',
+      required: ['action'],
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['write', 'read', 'list', 'search', 'edit', 'delete'],
+          description:
+            'write (create or replace one note) | read (load notes in full) | list (every note, index form) | search (match on content) | edit (change part of an existing note) | delete (remove one).',
+        },
+        name: {
+          type: 'string',
+          description:
+            'Lowercase kebab-case identifier. Required for write, edit, and delete; for read, use this or `names`.',
+        },
+        names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Read several notes in one call instead of one round trip each.',
+        },
+        description: {
+          type: 'string',
+          description:
+            'One line, shown in the always-loaded index. It is the only thing a future session sees before deciding whether to open this note, so make it say what the note settles, not what topic it is near. Required for write; on edit, replaces the existing one.',
+        },
+        type: {
+          type: 'string',
+          enum: [...TYPES],
+          description:
+            'Required for write. On edit, reclassifies the note. On list, restricts the result to one type.',
+        },
+        old_string: {
+          type: 'string',
+          description:
+            'edit only: the exact text to replace, copied from the note body. Must appear exactly once unless replace_all is set. Only the body is searched, so an edit can never damage the frontmatter.',
+        },
+        new_string: {
+          type: 'string',
+          description: 'edit only: what old_string becomes. Pass an empty string to delete that text.',
+        },
+        replace_all: {
+          type: 'boolean',
+          description: 'edit only: replace every occurrence instead of requiring old_string to be unique.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The note itself. For feedback and project notes, state the fact, then a "Why:" line and a "How to apply:" line so a later session can act on it without guessing.',
+        },
+        scope: {
+          type: 'string',
+          enum: [...LAYERS],
+          description: `Where to write: project (this working directory) or global (every project). Default ${writeLayer.id}.`,
+        },
+        query: {
+          type: 'string',
+          description: 'Required for search. Words are matched as substrings against name, description, and body.',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum search results (default 10).',
+        },
       },
     },
     output: {

@@ -161,7 +161,7 @@ dsh plugin --profile <name> remove dsh-memory
 npm test
 ```
 
-56 个用例，两个文件：`test/memory.test.js` 覆盖插件装配、工具的六个动作、分层与遮蔽、待写清单、近重复提示、注入转义、预算裁剪、`output.schema` 一致性，以及 `edit` 的几条边界（锚点不唯一、锚点碰不到 frontmatter、`$&` 是字面量、拒绝路径不落盘）；`test/store.test.js` 覆盖缓存的正确性与性能 —— 包括"内容被等长替换且 mtime 复原时确实没读盘"这种直接验证缓存生效的用例。
+58 个用例，两个文件：`test/memory.test.js` 覆盖插件装配、可直接发送给模型的工具参数 JSON Schema（issue #1）、工具的六个动作、分层与遮蔽、待写清单、近重复提示、注入转义、预算裁剪、`output.schema` 一致性，以及 `edit` 的几条边界（锚点不唯一、锚点碰不到 frontmatter、`$&` 是字面量、拒绝路径不落盘）；`test/store.test.js` 覆盖缓存的正确性与性能 —— 包括"内容被等长替换且 mtime 复原时确实没读盘"这种直接验证缓存生效的用例。
 
 ## 与 Claude Code auto-memory 的关系
 
