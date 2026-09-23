@@ -151,6 +151,56 @@ test('目录不存在时是空库，不是异常', () => {
   }
 })
 
+for (const action of ['write', 'update']) {
+  test(`${action} 在文件签名完全相同时也刷新合并索引和搜索`, () => {
+    const s = setup()
+    try {
+      put(s, 'alpha', { content: 'AAAA' })
+      const path = s.store.entry('alpha').path
+      const pinned = new Date(Math.floor(statSync(path).mtimeMs))
+      utimesSync(path, pinned, pinned)
+      const before = s.store.entries()
+      const size = statSync(path).size
+      // 在内部写完、重建索引之前恢复时间戳，确定性模拟低精度文件系统。
+      const rebuild = s.store.rebuildIndex.bind(s.store)
+      s.store.rebuildIndex = (layer) => {
+        utimesSync(path, pinned, pinned)
+        return rebuild(layer)
+      }
+      if (action === 'write') put(s, 'alpha', { content: 'BBBB' })
+      else s.store.update({ name: 'alpha', body: 'BBBB' })
+      assert.equal(statSync(path).size, size)
+      assert.equal(statSync(path).mtimeMs, pinned.getTime())
+      assert.equal(s.store.entry('alpha').body, 'BBBB')
+      const after = s.store.entries()
+      assert.notEqual(after, before, '单层缓存与合并缓存必须一起失效')
+      assert.equal(after[0].body, 'BBBB')
+      assert.equal(s.store.search('AAAA').length, 0)
+      assert.equal(s.store.search('BBBB').length, 1)
+      assert.equal(s.store.entries(), after, '刷新后仍应缓存稳态结果')
+    } finally {
+      s.cleanup()
+    }
+  })
+}
+
+test('更新被项目层遮蔽的全局记忆时仍保留全局 created', () => {
+  const s = setup()
+  try {
+    const globalLayer = s.store.layerById('global')
+    mkdirSync(globalLayer.dir, { recursive: true })
+    const path = join(globalLayer.dir, 'shared.md')
+    const created = '2020-01-01T00:00:00.000Z'
+    writeFileSync(path, `---\nname: shared\ndescription: global\nmetadata:\n  type: user\n  created: ${created}\n---\n\nglobal body\n`)
+    put(s, 'shared', { description: 'project', content: 'local body' })
+    s.store.write({ name: 'shared', description: 'updated global', type: 'user', content: 'new global body', layer: globalLayer })
+    assert.ok(readFileSync(path, 'utf8').includes(`created: ${created}`))
+    assert.equal(s.store.entry('shared').body, 'local body', '全局写入不应改动项目遮蔽条目')
+  } finally {
+    s.cleanup()
+  }
+})
+
 test('稳态下 entries() 返回同一个数组，重复调用的开销可忽略', () => {
   const s = setup()
   try {
