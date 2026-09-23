@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { LAYERS, resolveLayers, defaultWriteLayer } from './lib/paths.js'
 import { TYPES, NAME_RE, parseMemory, ageInDays } from './lib/frontmatter.js'
 import { MemoryStore } from './lib/store.js'
+import { validateToolArgs } from './lib/tool-args.js'
 import { renderIndexSection, MAX_INDEX_BYTES } from './lib/inject.js'
 
 const packageRoot = dirname(fileURLToPath(import.meta.url))
@@ -117,6 +118,9 @@ const TOOL_DESCRIPTION = [
   'exact text to replace, rather than resending the whole thing through `write`. When a note turns out',
   'to be wrong, `delete` it — a stale memory costs more than a missing one.',
   '',
+  'For body edits, send both old_string and new_string; an explicit empty new_string deletes the match.',
+  'Example: {action: "edit", name: "db-port", old_string: "5432", new_string: "5433"}.',
+  '',
   'Cross-reference freely as [[their-name]], including names you have not written yet. An unwritten',
   'link is not a mistake: it records that the fact is worth capturing, and `list` returns those names',
   'as a backlog so a later session can work through them.',
@@ -133,7 +137,10 @@ export function apply(ctx, config = {}) {
   const layers = resolveLayers(config, cwd)
   const store = new MemoryStore(layers)
   const writeLayer = defaultWriteLayer(layers)
-  const budget = Number.isFinite(config.indexBudgetBytes) ? config.indexBudgetBytes : MAX_INDEX_BYTES
+  const budget = config.indexBudgetBytes ?? MAX_INDEX_BYTES
+  if (!Number.isSafeInteger(budget) || budget < 0) {
+    throw new Error('dsh-memory: indexBudgetBytes must be a non-negative safe integer')
+  }
 
   // ── 索引注入 ───────────────────────────────────────────────────────────────
   // order 50：persona(0) 之后、工具指引(100+) 之前。
@@ -182,14 +189,14 @@ export function apply(ctx, config = {}) {
 
 function defineMemoryTool({ store, layers, writeLayer }) {
   const layerIds = layers.map((l) => l.id)
-
-  return {
-    name: 'memory',
-    description: TOOL_DESCRIPTION,
-    parameters: {
+  // Register wire-ready JSON Schema; older hosts do not compile field specs.
+  const parameters = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['action'],
+    properties: {
       action: {
         type: 'string',
-        required: true,
         enum: ['write', 'read', 'list', 'search', 'edit', 'delete'],
         description:
           'write (create or replace one note) | read (load notes in full) | list (every note, index form) | search (match on content) | edit (change part of an existing note) | delete (remove one).',
@@ -244,9 +251,15 @@ function defineMemoryTool({ store, layers, writeLayer }) {
       },
       limit: {
         type: 'integer',
-        description: 'Maximum search results (default 10).',
+        description: 'Maximum search results: a positive integer (default 10).',
       },
     },
+  }
+
+  return {
+    name: 'memory',
+    description: TOOL_DESCRIPTION,
+    parameters,
     output: {
       schema: {
         type: 'object',
@@ -323,7 +336,13 @@ function defineMemoryTool({ store, layers, writeLayer }) {
       },
       render: renderToolResult,
     },
-    execute: async (args) => executeMemory({ store, layerIds, writeLayer }, args ?? {}),
+    execute: async (args) => {
+      const error = validateToolArgs(parameters, args)
+      if (error) {
+        return { action: typeof args?.action === 'string' ? args.action : 'unknown', ok: false, message: error }
+      }
+      return executeMemory({ store, layerIds, writeLayer }, args)
+    },
   }
 }
 
@@ -410,12 +429,23 @@ function doRead(store, a) {
 
   const documents = []
   const missing = []
+  // One index snapshot per batch; repeatedly scanning per note grows as notes × library size.
+  const entries = store.entries()
+  const byName = new Map(entries.map((entry) => [entry.name, entry]))
+  const backlinks = new Map()
+  for (const entry of entries) {
+    for (const link of entry.links) {
+      if (link === entry.name) continue
+      if (!backlinks.has(link)) backlinks.set(link, [])
+      backlinks.get(link).push(entry.name)
+    }
+  }
   for (const memName of unique) {
     if (!NAME_RE.test(memName)) {
       missing.push(memName)
       continue
     }
-    const entry = store.entry(memName)
+    const entry = byName.get(memName)
     if (!entry) {
       missing.push(memName)
       continue
@@ -427,7 +457,6 @@ function doRead(store, a) {
       missing.push(memName)
       continue
     }
-    const known = new Set(store.entries().map((e) => e.name))
     documents.push({
       name: entry.name,
       type: entry.type,
@@ -435,8 +464,8 @@ function doRead(store, a) {
       content,
       updatedDaysAgo: ageInDays(entry.updated),
       links: entry.links,
-      unwrittenLinks: entry.links.filter((l) => !known.has(l)),
-      backlinks: store.backlinks(entry.name),
+      unwrittenLinks: entry.links.filter((l) => !byName.has(l)),
+      backlinks: backlinks.get(entry.name) ?? [],
     })
   }
 
@@ -538,6 +567,15 @@ function doEdit(store, a) {
     return { action: 'edit', ok: false, message: `type must be one of: ${TYPES.join(', ')}` }
   }
 
+  if (Object.hasOwn(a, 'old_string') && (!oldString || typeof a.new_string !== 'string')) {
+    return { action: 'edit', ok: false, message: 'edit requires a non-empty old_string and an explicit new_string; use "" only to delete the matched text.' }
+  }
+  if (Object.hasOwn(a, 'new_string') && !oldString) {
+    return { action: 'edit', ok: false, message: 'old_string is required when new_string is provided.' }
+  }
+  if (Object.hasOwn(a, 'description') && !description) {
+    return { action: 'edit', ok: false, message: 'description must not be empty.' }
+  }
   const changesBody = oldString.length > 0
   if (!changesBody && !description && !rawType) {
     return {

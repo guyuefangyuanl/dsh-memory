@@ -63,7 +63,7 @@ metadata:
 
 四种 `type`：`user`（这个人是谁）· `feedback`（希望你怎么工作，含原因）· `project`（在做什么，写绝对日期）· `reference`（外部资源指针）。正文里用 `[[other-name]]` 互链，**包括还没写的名字**——见下面「链到还没写的记忆是特性」。
 
-`created` 在同名更新时会被保留，`updated` 每次改写刷新。老格式（没有这两个字段）的记忆照常可读，时间戳落回文件 mtime。
+`created` 在同名更新时会从实际写入的那一层保留（全局同名记忆被项目层遮蔽时也一样），`updated` 每次改写刷新。老格式（没有这两个字段）的记忆照常可读，时间戳落回文件 mtime。
 
 ## 性能
 
@@ -71,9 +71,9 @@ metadata:
 
 这里用签名缓存：每次只做一次 `readdir` + 每个文件一次 `stat`（不读内容），拼成 `文件名:mtime:size` 的签名。签名没变就直接返回上次的结果，连渲染都跳过；签名变了也只重读真正变过的那几个文件。同样 120 条记忆，**约 1.8 ms/次**。
 
-自己写完的文件会显式失效缓存，不依赖签名 —— 同一毫秒内把一条记忆改成等长的另一份内容时 mtime 和 size 都不变，只靠签名会漏。外部进程（另一个会话、手工编辑）的改动则由签名捕获。
+自己写完的文件会同时失效文件缓存与合并索引缓存，不依赖签名 —— 同一毫秒内把一条记忆改成等长的另一份内容时 mtime 和 size 都不变，只靠签名会漏。外部进程（另一个会话、手工编辑）的改动则由签名捕获。
 
-`search`、反向链接、悬空链接检测全部跑在这份缓存上，不额外碰磁盘。
+`search`、反向链接、悬空链接检测全部跑在这份缓存上，不额外碰磁盘。批量 `read` 在一次调用里只扫描各活动层一次，再用同一份索引快照计算存在性和反向链接，避免每读一条就重扫整个记忆库。
 
 ## 配置
 
@@ -82,7 +82,7 @@ metadata:
 | `dshHome` | `$DSH_HOME` 或 `~/.dsh` | 记忆根目录的父级 |
 | `scope` | `layered` | `layered` 两层都可见；`project` 只按 cwd 隔离的那层；`global` 只共享层 |
 | `cwd` | `$DSH_CWD` 或 `process.cwd()` | 决定项目 slug |
-| `indexBudgetBytes` | `16384` | 注入索引的字节上限 |
+| `indexBudgetBytes` | `16384` | 完整注入文本的 UTF-8 字节上限，含说明、标题和标签；`0` 关闭索引注入 |
 | `maintenanceSkill` | `true` | 设为 `false` 则不注册捆绑技能 |
 
 ## 装法
@@ -105,6 +105,23 @@ dsh plugin --profile <name> add <本包绝对路径>
 本包根 `package.json` 声明了 `dsh.bundle.patch`，所以 `dsh plugin add` 会自动把它追加进该 profile 的 `dsh.profile.bundles` 并应用 `cordis.patch.yml` —— **不需要手工编辑 profile 的 package.json**。反过来说，路径指错时只会打一条 warning，不报错，是静默失效，装完记得确认插件真的挂上了。
 
 捆绑技能要生效还需要该 preset 挂了 skills 服务（`skill-filesystem` / `tool-skill` 之类）。没挂就只是少一个技能，`memory` 工具和索引注入照常工作。
+
+## 模型与宿主兼容性
+
+插件通过宿主的工具注册表提供能力，不自行创建模型客户端或选择模型。参数直接使用完整 JSON Schema，可被旧版 dsh 原样发送；字段保留基础类型、枚举和字符串数组，不依赖自动类型转换。
+
+本地隔离安装并验证了 `@deepseek-ai/dsh-tools` / `dsh-system-prompt` 的 `0.1.0-rc.6`、`0.1.1-rc.2`、`0.1.2-rc.1`、`0.1.5-rc.2`：真实注册表装配、Schema 导出、六个动作、输出校验、prompt 组装及卸载。安装的 peer 范围显式包含这些 RC 系列；仅写 `^0.1.0-rc.6` 不会接受后续版本号的预发布版本。尚未覆盖的 alpha 系列没有自动放开。
+
+| 情况 | 支持边界与排查 |
+|---|---|
+| 普通 Function Calling | 使用对象根的 JSON Schema；`action` 必填，动作专属参数按需提供。 |
+| 模型参数不完整或类型错误 | 返回 `ok: false` 和具体字段错误；不会把字符串数字、`null` 或遗漏的替换文本悄悄转换后写入。不要给无关字段填 `null`，直接省略。 |
+| PTC / 代码调用 | 宿主可从同一 Schema 生成工具 SDK；隔离测试检查 TypeScript 及宿主提供的 Python SDK 导出。 |
+| 小上下文模型 | 调低 `indexBudgetBytes`，超长条目会被跳过，其余短条目仍可进入索引。预算连简短提示也放不下时不注入，工具仍可用。 |
+| DeepSeek strict 模式 | 需要宿主和 provider 单独适配；本插件当前 Schema 面向普通工具调用，不宣称 strict 兼容。不要仅在上游强制开启 strict。 |
+| 模型不支持工具调用 | 插件无法给模型增加工具能力，需要在宿主选择支持工具调用的模型。 |
+
+[DeepSeek 官方工具调用文档](https://api-docs.deepseek.com/guides/tool_calls/)要求 strict 模式下所有属性必填且对象禁止额外字段；这与普通模式的可选参数契约不同。[dsh 工具开发文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md)也明确直接注册 JSON Schema 的工具需要自行校验输入。以上本地检查不等于真实模型 API 验收；模型名、endpoint、鉴权及思考模式的协议转换仍由宿主负责。
 
 ## 权限与副作用
 
@@ -139,7 +156,7 @@ dsh plugin --profile <name> remove dsh-memory
 
 **索引是派生物，不做增量维护。** 手改坏、并发写、进程中途挂掉都不会让它和实际文件长期失配。
 
-**超预算时按 type 优先级裁，不按字母序截尾。** 先保 `user` / `feedback`，同类里保最近更新的，并明确写出「还有 N 条被省略，用 `list` / `search` 够得到」。按名字尾部截断等于让字母表决定模型记得什么。
+**超预算时按 type 优先级裁，不按字母序截尾。** 预算覆盖完整 UTF-8 注入文本，单条超长时跳过它继续考虑后续条目。 先保 `user` / `feedback`，同类里保最近更新的，并明确写出「还有 N 条被省略，用 `list` / `search` 够得到」。按名字尾部截断等于让字母表决定模型记得什么。
 
 **记忆文本会被转义。** 记忆内容里的 `</system-reminder>` 字面量会被转义，模型写进记忆的文本关不掉插件自己的注入框。插件自己的框不转义。`description` 里的换行会被压平，塞不进第二个 frontmatter 头。
 
@@ -158,10 +175,13 @@ dsh plugin --profile <name> remove dsh-memory
 ## 测试
 
 ```bash
+npm ci --ignore-scripts --legacy-peer-deps
 npm test
 ```
 
-56 个用例，两个文件：`test/memory.test.js` 覆盖插件装配、工具的六个动作、分层与遮蔽、待写清单、近重复提示、注入转义、预算裁剪、`output.schema` 一致性，以及 `edit` 的几条边界（锚点不唯一、锚点碰不到 frontmatter、`$&` 是字面量、拒绝路径不落盘）；`test/store.test.js` 覆盖缓存的正确性与性能 —— 包括"内容被等长替换且 mtime 复原时确实没读盘"这种直接验证缓存生效的用例。
+70 个用例，三个文件。`test/compatibility.test.js` 使用 Ajv 校验真实 JSON Schema、输入/输出契约，覆盖模型错误参数、漏传替换文本、完整索引字节预算、批量读取扫描次数和 RC 版本范围。其余：`test/memory.test.js` 覆盖插件装配、可直接发送给模型的工具参数 JSON Schema（issue #1）、工具的六个动作、分层与遮蔽、待写清单、近重复提示、注入转义、预算裁剪、`output.schema` 一致性，以及 `edit` 的几条边界（锚点不唯一、锚点碰不到 frontmatter、`$&` 是字面量、拒绝路径不落盘）；`test/store.test.js` 覆盖缓存的正确性与性能 —— 包括"内容被等长替换且 mtime 复原时确实没读盘"这种直接验证缓存生效的用例。
+
+开发依赖仅用于测试；插件仍然没有运行时依赖。测试安装使用 `--legacy-peer-deps`，避免为纯单元测试自动装入整套宿主。CI 另行安装真实宿主，执行 `node scripts/host-smoke.mjs <宿主安装目录>`；单元测试矩阵覆盖 Windows / Linux、Node.js 22 / 24。
 
 ## 与 Claude Code auto-memory 的关系
 

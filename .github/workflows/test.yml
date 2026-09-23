@@ -1,0 +1,52 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts --legacy-peer-deps
+      - run: npm test
+      - run: npm pack --dry-run
+
+  host:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh: [0.1.0-rc.6, 0.1.1-rc.2, 0.1.2-rc.1, 0.1.5-rc.2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install isolated host
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-host"
+          printf '{"private":true}' > "$RUNNER_TEMP/dsh-host/package.json"
+          packages=()
+          for name in tools system-prompt llm agent scope session invariants code-runtime user-approval brand attachment timeout typert-protocol; do
+            packages+=("@deepseek-ai/dsh-$name@$DSH_VERSION")
+          done
+          npm install --prefix "$RUNNER_TEMP/dsh-host" --ignore-scripts --no-audit --no-fund "${packages[@]}" "@deepseek-ai/cordis@4.0.2"
+      - name: Verify real registry and prompt assembly
+        run: node scripts/host-smoke.mjs "$RUNNER_TEMP/dsh-host"
